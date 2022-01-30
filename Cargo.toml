@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    # ...
+    "xtask",
+]
+default-members = ["xtask"]
