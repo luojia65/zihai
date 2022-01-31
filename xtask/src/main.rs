@@ -6,7 +6,7 @@ fn main() {
     let status = Command::new("qemu-system-riscv64")
         .current_dir(project_root())
         .args(&["-machine", "virt"])
-        // .args(&["-bios", "rustsbi-qemu.bin"])
+        .args(&["-bios", "bootloader/rustsbi-qemu.bin"])
         // .args(&["-kernel", "test-kernel.bin"])
         .args(&["-smp", "8"]) // 8 cores
         .arg("-nographic")
