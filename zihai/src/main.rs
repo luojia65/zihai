@@ -27,9 +27,11 @@ pub unsafe extern "C" fn start() {
         "j      1b", // non-boot hart, halt
         "2:",
         "li     sp, {}",
+        "add    sp, sp, {}",
         "call   {}",
         "unimp", // unreachable
         in(reg) &BOOT_STACK,
+        in(reg) BOOT_STACK_SIZE,
         in(reg) rust_init,
     )
 }
