@@ -3,5 +3,13 @@
 version = 3
 
 [[package]]
+name = "test-kernel"
+version = "0.1.0"
+
+[[package]]
 name = "xtask"
+version = "0.1.0"
+
+[[package]]
+name = "zihai"
 version = "0.1.0"

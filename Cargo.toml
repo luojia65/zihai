@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    # ...
+    "zihai",
+    "test-kernel",
     "xtask",
 ]
 default-members = ["xtask"]
