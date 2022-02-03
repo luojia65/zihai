@@ -28,21 +28,21 @@ fn main() {
 
     match &args.command {
         Commands::Make { } => {
-            println!("Make hypervisor");
+            println!("xtask: make hypervisor");
             xtask_build_zihai();
         }
         Commands::Qemu { } => {
-            println!("Make hypervisor and run in QEMU");
+            println!("xtask: make hypervisor and run in QEMU");
             xtask_build_zihai();
             xtask_run_zihai();
         }
         Commands::Debug { } => {
-            println!("Make hypervisor and debug in QEMU");
+            println!("xtask: make hypervisor and debug in QEMU");
             xtask_build_zihai();
             xtask_debug_zihai();
         }
         Commands::Gdb { } => {
-            println!("Debug hypervisor on GDB server localhost:3333");
+            println!("xtask: debug hypervisor on GDB server localhost:3333");
             xtask_gdb_zihai();
         }
     }
@@ -59,7 +59,7 @@ fn xtask_build_zihai() {
     command.args(&["--target", DEFAULT_TARGET]);
     let status = command.status().unwrap();
     if !status.success() {
-        eprintln!("cargo build failed");
+        eprintln!("xtask: cargo build failed with {}", status);
         process::exit(1);
     }
 }
@@ -77,7 +77,7 @@ fn xtask_run_zihai() {
     let status = command.status().expect("run program");
 
     if !status.success() {
-        eprintln!("qemu failed with status {}", status);
+        eprintln!("xtask: qemu failed with {}", status);
         process::exit(status.code().unwrap_or(1));
     }
 }
@@ -96,7 +96,7 @@ fn xtask_debug_zihai() {
     let status = command.status().expect("run program");
 
     if !status.success() {
-        eprintln!("qemu failed with status {}", status);
+        eprintln!("xtask: qemu failed with {}", status);
         process::exit(status.code().unwrap_or(1));
     }
 }
@@ -116,7 +116,7 @@ fn xtask_gdb_zihai() {
     let status = command.status().expect("run program");
 
     if !status.success() {
-        eprintln!("gdb failed with status {}", status);
+        eprintln!("xtask: gdb failed with {}", status);
         process::exit(status.code().unwrap_or(1));
     }
 }
