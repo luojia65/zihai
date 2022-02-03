@@ -17,6 +17,10 @@ enum Commands {
     Make {},
     /// Emulate hypervisor system in QEMU
     Qemu {},
+    /// Emulate in QEMU under debug configuration
+    Debug {},
+    /// Run GDB debugger
+    Gdb {},
 }
 
 fn main() {
@@ -31,6 +35,15 @@ fn main() {
             println!("Make hypervisor and run in QEMU");
             xtask_build_zihai();
             xtask_run_zihai();
+        }
+        Commands::Debug { } => {
+            println!("Make hypervisor and debug in QEMU");
+            xtask_build_zihai();
+            xtask_debug_zihai();
+        }
+        Commands::Gdb { } => {
+            println!("Debug hypervisor on GDB server localhost:3333");
+            xtask_gdb_zihai();
         }
     }
 }
@@ -52,17 +65,60 @@ fn xtask_build_zihai() {
 }
 
 fn xtask_run_zihai() {
-    // run ELF file
-    let status = Command::new("qemu-system-riscv64")
-        .current_dir(project_root())
-        .args(&["-machine", "virt"])
-        .args(&["-bios", "bootloader/rustsbi-qemu.bin"])
-        .args(&["-kernel", "target/riscv64imac-unknown-none-elf/debug/zihai"])
-        .args(&["-smp", "8"]) // 8 cores
-        .arg("-nographic")
-        .status()
-        .unwrap();
-    println!("{}", status);
+    let mut command = Command::new("qemu-system-riscv64");
+    command.current_dir(project_root());
+    command.args(&["-machine", "virt"]);
+    command.args(&["-bios", "bootloader/rustsbi-qemu.bin"]);
+    // QEMU supports to run ELF file directly
+    command.args(&["-kernel", "target/riscv64imac-unknown-none-elf/debug/zihai"]);
+    command.args(&["-smp", "8"]); // 8 cores
+    command.arg("-nographic");
+
+    let status = command.status().expect("run program");
+
+    if !status.success() {
+        eprintln!("qemu failed with status {}", status);
+        process::exit(status.code().unwrap_or(1));
+    }
+}
+
+fn xtask_debug_zihai() {
+    let mut command = Command::new("qemu-system-riscv64");
+    command.current_dir(project_root());
+    command.args(&["-machine", "virt"]);
+    command.args(&["-bios", "bootloader/rustsbi-qemu.bin"]);
+    command.args(&["-kernel", "target/riscv64imac-unknown-none-elf/debug/zihai"]);
+    command.args(&["-smp", "8"]); // 8 cores
+    command.args(&["-gdb", "tcp::3333"]);
+    command.arg("-S"); // freeze CPU at startup
+    command.arg("-nographic");
+
+    let status = command.status().expect("run program");
+
+    if !status.success() {
+        eprintln!("qemu failed with status {}", status);
+        process::exit(status.code().unwrap_or(1));
+    }
+}
+
+fn xtask_gdb_zihai() {
+    let mut command = Command::new("riscv64-unknown-elf-gdb");
+    command.current_dir(project_root());
+    command.args(&["--eval-command", "file target/riscv64imac-unknown-none-elf/debug/zihai"]);
+    command.args(&["--eval-command", "target extended-remote localhost:3333"]);
+    command.arg("--quiet");
+
+    ctrlc::set_handler(move || {
+        // when ctrl-c, don't exit gdb
+    })
+    .expect("disable Ctrl-C exit");
+
+    let status = command.status().expect("run program");
+
+    if !status.success() {
+        eprintln!("gdb failed with status {}", status);
+        process::exit(status.code().unwrap_or(1));
+    }
 }
 
 fn project_root() -> PathBuf {
