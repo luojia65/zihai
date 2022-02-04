@@ -1,6 +1,7 @@
-#![feature(asm_sym, asm_const, naked_functions)]
+#![feature(asm_sym, asm_const, naked_functions, stdsimd, alloc_error_handler)]
 #![no_std]
 #![no_main]
+extern crate alloc;
 
 #[macro_use]
 mod console;
@@ -18,9 +19,44 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     if hsm_version == 0 { // HSM does not exist under current SBI environment
         panic!("no HSM extension exist under current SBI environment");
     }
-    println!("Init hart id: {}", hartid);
-    println!("Opaque register: {}", opaque);
-    println!("SBI HSM probe identifier: {}", hsm_version);
+    println!("zihai > init hart id: {}", hartid);
+    println!("zihai > opaque register: {}", opaque);
+    println!("zihai > SBI HSM probe identifier: {}", hsm_version);
+    mm::heap_init();
+    mm::test_frame_alloc();
+    // there's only one frame allocator no matter how much core the system have
+    let from = mm::PhysAddr(0x80420000).page_number::<mm::Sv39>();
+    let to = mm::PhysAddr(0x80800000).page_number::<mm::Sv39>(); // fixed for qemu
+    let frame_alloc = spin::Mutex::new(mm::StackFrameAllocator::new(from, to));
+    let mut kernel_addr_space = mm::PagedAddrSpace::try_new_in(mm::Sv39, &frame_alloc)
+        .expect("allocate page to create kernel paged address space");
+    mm::test_map_solve();
+    kernel_addr_space.allocate_map(
+        mm::VirtAddr(0x80000000).page_number::<mm::Sv39>(), 
+        mm::PhysAddr(0x80000000).page_number::<mm::Sv39>(), 
+        1024,
+        mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X
+    ).expect("allocate one mapped space");
+    kernel_addr_space.allocate_map(
+        mm::VirtAddr(0x80400000).page_number::<mm::Sv39>(), 
+        mm::PhysAddr(0x80400000).page_number::<mm::Sv39>(), 
+        32,
+        mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X
+    ).expect("allocate user program mapped space");
+    kernel_addr_space.allocate_map(
+        mm::VirtAddr(0x80420000).page_number::<mm::Sv39>(), 
+        mm::PhysAddr(0x80420000).page_number::<mm::Sv39>(), 
+        1024 - 32, 
+        mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X
+    ).expect("allocate remaining space");
+    mm::test_asid_alloc();
+    let max_asid = mm::max_asid();
+    let mut asid_alloc = mm::StackAsidAllocator::new(max_asid);
+    let kernel_asid = asid_alloc.allocate_asid().expect("alloc kernel asid");
+    let _kernel_satp = unsafe {
+        mm::activate_paged_riscv_sv39(kernel_addr_space.root_page_number(), kernel_asid)
+    };
+    println!("zihai > entered kernel virtual address space: {}", kernel_asid);
 
     // call sbi remote retentive suspension, use sbi 0.3 to wake other harts
 
