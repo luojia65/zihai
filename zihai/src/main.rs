@@ -10,15 +10,23 @@ mod sbi;
 
 use core::arch::asm;
 use core::mem::MaybeUninit;
+use riscv::register::stvec::{self, TrapMode};
 
 // boot hart start
 pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     // boot hart init
     println!("Welcome to zihai hypervisor");
+    let mut trap_addr = on_supervisor_trap as usize;
+    if trap_addr & 0b1 != 0 {
+        trap_addr += 0b1;
+    }
+    unsafe { stvec::write(trap_addr, TrapMode::Direct) };
+    
     let hsm_version = sbi::probe_extension(0x48534D);
     if hsm_version == 0 { // HSM does not exist under current SBI environment
         panic!("no HSM extension exist under current SBI environment");
     }
+    unsafe { asm!("unimp") }; // FIXME: detect extensions
     println!("zihai > init hart id: {}", hartid);
     println!("zihai > opaque register: {}", opaque);
     println!("zihai > SBI HSM probe identifier: {}", hsm_version);
@@ -65,6 +73,70 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
 
 pub extern "C" fn rust_init_harts(_opaque: usize) {
     // join working queue, ...
+}
+
+// -- detect isa extensions in current hart --
+
+#[naked]
+unsafe extern "C" fn on_supervisor_trap() -> ! {
+    asm!(
+        ".p2align 2",
+        "addi   sp, sp, -8*17",
+        "sd     a0, 0*8(sp)",
+        "sd     a1, 1*8(sp)",
+        "sd     a2, 2*8(sp)",
+        "sd     a3, 3*8(sp)",
+        "sd     a4, 4*8(sp)",
+        "sd     a5, 5*8(sp)",
+        "sd     a6, 6*8(sp)",
+        "sd     a7, 7*8(sp)",
+        "sd     t0, 8*8(sp)",
+        "sd     t1, 9*8(sp)",
+        "sd     t2, 10*8(sp)",
+        "sd     t3, 11*8(sp)",
+        "sd     t4, 12*8(sp)",
+        "sd     t5, 13*8(sp)",
+        "sd     t6, 14*8(sp)",
+        "csrr   t0, sstatus",
+        "sd     t0, 15*8(sp)",
+        "csrr   t1, sepc",
+        "sd     t1, 16*8(sp)",
+        "mv     a0, sp",
+        "call   {rust_supervisor_trap}",
+        "ld     t0, 15*8(sp)",
+        "csrw   sstatus, t0",
+        "ld     t1, 16*8(sp)",
+        "csrw   sepc, t1",
+        "ld     a0, 0*8(sp)",
+        "ld     a1, 1*8(sp)",
+        "ld     a2, 2*8(sp)",
+        "ld     a3, 3*8(sp)",
+        "ld     a4, 4*8(sp)",
+        "ld     a5, 5*8(sp)",
+        "ld     a6, 6*8(sp)",
+        "ld     a7, 7*8(sp)",
+        "ld     t0, 8*8(sp)",
+        "ld     t1, 9*8(sp)",
+        "ld     t2, 10*8(sp)",
+        "ld     t3, 11*8(sp)",
+        "ld     t4, 12*8(sp)",
+        "ld     t5, 13*8(sp)",
+        "ld     t6, 14*8(sp)",
+        "addi   sp, sp, 8*17",
+        "sret",
+        rust_supervisor_trap = sym rust_supervisor_trap,
+        options(noreturn),
+    )
+}
+
+#[repr(C)]
+struct TrapFrame {
+    values: [usize; 17],
+}
+
+extern "C" fn rust_supervisor_trap(trap_frame: &mut TrapFrame) {
+    println!("trapped"); // FIXME: detect extensions
+    trap_frame.values[16] += 4; // sepc += 4
 }
 
 #[panic_handler]
