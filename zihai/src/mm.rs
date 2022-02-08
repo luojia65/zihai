@@ -1,15 +1,15 @@
 //! Memory module
-//! 
+//!
 //! Includes heap memory and virtual memory system
 #![allow(unused)] // use in the future
 
 use alloc::alloc::Layout;
-use buddy_system_allocator::LockedHeap;
-use core::{ops::Range, fmt};
-use riscv::register::satp::{self, Satp, Mode};
-use core::arch::riscv64;
-use bit_field::BitField;
 use alloc::vec::Vec;
+use bit_field::BitField;
+use buddy_system_allocator::LockedHeap;
+use core::arch::riscv64;
+use core::{fmt, ops::Range};
+use riscv::register::satp::{self, Mode, Satp};
 
 const KERNEL_HEAP_SIZE: usize = 64 * 1024;
 
@@ -26,9 +26,8 @@ fn alloc_error_handler(layout: Layout) -> ! {
 
 pub(crate) fn heap_init() {
     unsafe {
-        HEAP.lock().init(
-            HEAP_SPACE.as_ptr() as usize, KERNEL_HEAP_SIZE
-        )
+        HEAP.lock()
+            .init(HEAP_SPACE.as_ptr() as usize, KERNEL_HEAP_SIZE)
     }
     let mut vec = Vec::new();
     for i in 0..5 {
@@ -45,7 +44,7 @@ pub(crate) fn heap_init() {
 pub struct PhysAddr(pub usize);
 
 impl PhysAddr {
-    pub fn page_number<M: PageMode>(&self) -> PhysPageNum { 
+    pub fn page_number<M: PageMode>(&self) -> PhysPageNum {
         PhysPageNum(self.0 >> M::FRAME_SIZE_BITS)
     }
 }
@@ -54,10 +53,10 @@ impl PhysAddr {
 pub struct VirtAddr(pub usize);
 
 impl VirtAddr {
-    pub fn page_number<M: PageMode>(&self) -> VirtPageNum { 
+    pub fn page_number<M: PageMode>(&self) -> VirtPageNum {
         VirtPageNum(self.0 >> M::FRAME_SIZE_BITS)
     }
-    pub fn page_offset<M: PageMode>(&self, lvl: PageLevel) -> usize { 
+    pub fn page_offset<M: PageMode>(&self, lvl: PageLevel) -> usize {
         self.0 & (M::get_layout_for_level(lvl).page_size::<M>() - 1)
     }
 }
@@ -95,7 +94,6 @@ impl VirtPageNum {
     }
 }
 
-
 // 页帧分配器。**对于物理空间的一个片段，只存在一个页帧分配器，无论有多少个处理核**
 #[derive(Debug)]
 pub struct StackFrameAllocator {
@@ -106,7 +104,11 @@ pub struct StackFrameAllocator {
 
 impl StackFrameAllocator {
     pub fn new(start: PhysPageNum, end: PhysPageNum) -> Self {
-        StackFrameAllocator { current: start, end, recycled: Vec::new() }
+        StackFrameAllocator {
+            current: start,
+            end,
+            recycled: Vec::new(),
+        }
     }
     pub fn allocate_frame(&mut self) -> Result<PhysPageNum, FrameAllocError> {
         if let Some(ppn) = self.recycled.pop() {
@@ -123,7 +125,9 @@ impl StackFrameAllocator {
     }
     pub fn deallocate_frame(&mut self, ppn: PhysPageNum) {
         // validity check
-        if ppn.is_within_range(self.current, self.end) || self.recycled.iter().find(|&v| {*v == ppn}).is_some() {
+        if ppn.is_within_range(self.current, self.end)
+            || self.recycled.iter().find(|&v| *v == ppn).is_some()
+        {
             panic!("Frame ppn={:x?} has not been allocated!", ppn);
         }
         // recycle
@@ -168,7 +172,11 @@ pub(crate) fn test_frame_alloc() {
     assert_eq!(f2, Ok(PhysPageNum(0x80001)), "second allocation");
     alloc.deallocate_frame(f1.unwrap());
     let f3 = alloc.allocate_frame();
-    assert_eq!(f3, Ok(PhysPageNum(0x80000)), "after free first, third allocation");
+    assert_eq!(
+        f3,
+        Ok(PhysPageNum(0x80000)),
+        "after free first, third allocation"
+    );
     println!("zihai > frame allocator test passed");
 }
 
@@ -199,12 +207,14 @@ pub fn max_asid() -> AddressSpaceId {
     let mut val: usize = ((1 << 16) - 1) << 44;
     #[cfg(target_pointer_width = "32")]
     let mut val: usize = ((1 << 9) - 1) << 22;
-    unsafe { core::arch::asm!("
+    unsafe {
+        core::arch::asm!("
         csrr    {tmp}, satp
         or      {val}, {tmp}, {val}
         csrw    satp, {val}
         csrrw   {val}, satp, {tmp}
-    ", tmp = out(reg) _, val = inlateout(reg) val) };
+    ", tmp = out(reg) _, val = inlateout(reg) val)
+    };
     #[cfg(target_pointer_width = "64")]
     return AddressSpaceId(((val >> 44) & ((1 << 16) - 1)) as u16);
     #[cfg(target_pointer_width = "32")]
@@ -221,7 +231,7 @@ pub fn max_asid() -> AddressSpaceId {
 #[derive(Debug)]
 pub struct StackAsidAllocator {
     current: AddressSpaceId,
-    exhausted: bool, 
+    exhausted: bool,
     max: AddressSpaceId,
     recycled: Vec<AddressSpaceId>,
 }
@@ -231,19 +241,24 @@ pub struct AsidAllocError;
 
 impl StackAsidAllocator {
     pub fn new(max_asid: AddressSpaceId) -> Self {
-        StackAsidAllocator { current: DEFAULT_ASID, exhausted: false, max: max_asid, recycled: Vec::new() }
+        StackAsidAllocator {
+            current: DEFAULT_ASID,
+            exhausted: false,
+            max: max_asid,
+            recycled: Vec::new(),
+        }
     }
 
     pub fn allocate_asid(&mut self) -> Result<AddressSpaceId, AsidAllocError> {
         if let Some(asid) = self.recycled.pop() {
-            return Ok(asid)
+            return Ok(asid);
         }
         if self.exhausted {
-            return Err(AsidAllocError)
+            return Err(AsidAllocError);
         }
         if self.current == self.max {
             self.exhausted = true;
-            return Ok(self.max)
+            return Ok(self.max);
         }
         if let Some(next) = self.current.next_asid(self.max) {
             let ans = self.current;
@@ -253,9 +268,11 @@ impl StackAsidAllocator {
             Err(AsidAllocError)
         }
     }
-    
+
     fn deallocate_asid(&mut self, asid: AddressSpaceId) {
-        if asid.next_asid(self.max).is_none() || self.recycled.iter().find(|&v| {*v == asid}).is_some() {
+        if asid.next_asid(self.max).is_none()
+            || self.recycled.iter().find(|&v| *v == asid).is_some()
+        {
             panic!("Asid {:x?} has not been allocated!", asid);
         }
         self.recycled.push(asid);
@@ -271,25 +288,45 @@ pub(crate) fn test_asid_alloc() {
     assert_eq!(a2, Ok(AddressSpaceId(1)), "second allocation");
     alloc.deallocate_asid(a1.unwrap());
     let a3 = alloc.allocate_asid();
-    assert_eq!(a3, Ok(AddressSpaceId(0)), "after free first one, third allocation");
+    assert_eq!(
+        a3,
+        Ok(AddressSpaceId(0)),
+        "after free first one, third allocation"
+    );
     for _ in 0..max_asid.0 - 2 {
         alloc.allocate_asid().unwrap();
     }
     let an = alloc.allocate_asid();
     assert_eq!(an, Ok(max_asid), "last asid");
     let an = alloc.allocate_asid();
-    assert_eq!(an, Err(AsidAllocError), "when asid exhausted, allocate next");
+    assert_eq!(
+        an,
+        Err(AsidAllocError),
+        "when asid exhausted, allocate next"
+    );
     alloc.deallocate_asid(a2.unwrap());
     let an = alloc.allocate_asid();
-    assert_eq!(an, Ok(AddressSpaceId(1)), "after free second one, allocate next");
+    assert_eq!(
+        an,
+        Ok(AddressSpaceId(1)),
+        "after free second one, allocate next"
+    );
     let an = alloc.allocate_asid();
     assert_eq!(an, Err(AsidAllocError), "no asid remains, allocate next");
-    
+
     let mut alloc = StackAsidAllocator::new(DEFAULT_ASID); // asid not implemented
     let a1 = alloc.allocate_asid();
-    assert_eq!(a1, Ok(AddressSpaceId(0)), "asid not implemented, first allocation");
+    assert_eq!(
+        a1,
+        Ok(AddressSpaceId(0)),
+        "asid not implemented, first allocation"
+    );
     let a2 = alloc.allocate_asid();
-    assert_eq!(a2, Err(AsidAllocError), "asid not implemented, second allocation");
+    assert_eq!(
+        a2,
+        Err(AsidAllocError),
+        "asid not implemented, second allocation"
+    );
 
     println!("zihai > host address space allocator test passed");
 }
@@ -310,7 +347,7 @@ impl FrameAllocator for DefaultFrameAllocator {
     }
 }
 
-impl<A: FrameAllocator + ?Sized> FrameAllocator for &A { 
+impl<A: FrameAllocator + ?Sized> FrameAllocator for &A {
     fn allocate_frame(&self) -> Result<PhysPageNum, FrameAllocError> {
         (**self).allocate_frame()
     }
@@ -338,7 +375,7 @@ impl<A: FrameAllocator> FrameBox<A> {
     // unsafe fn from_ppn(ppn: PhysPageNum, frame_alloc: A) -> Self {
     //     Self { ppn, frame_alloc }
     // }
-    
+
     // 得到本页帧内存的页号
     pub fn phys_page_num(&self) -> PhysPageNum {
         self.ppn
@@ -388,7 +425,7 @@ pub trait PageMode: Copy {
     // 解释页表项目；如果项目无效，返回None，可以直接操作slot写入其它数据
     fn slot_try_get_entry(slot: &mut Self::Slot) -> Result<&mut Self::Entry, &mut Self::Slot>;
     // 页表项的设置
-    type Flags : Clone;
+    type Flags: Clone;
     // 写数据，建立一个到子页表的页表项
     fn slot_set_child(slot: &mut Self::Slot, ppn: PhysPageNum);
     // 写数据，建立一个到内存地址的页表项
@@ -404,7 +441,7 @@ pub trait PageMode: Copy {
 // 我们认为今天的分页系统都是分为不同的等级，就是多级页表，这里表示页表的等级是多少
 // todo: 实现一些函数，用于分页算法
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct PageLevel(u8); 
+pub struct PageLevel(u8);
 
 impl PageLevel {
     pub const fn leaf_level() -> Self {
@@ -421,12 +458,14 @@ impl PageMode for Sv39 {
     const PPN_BITS: usize = 44;
     type PageTable = Sv39PageTable;
     fn get_layout_for_level(level: PageLevel) -> FrameLayout {
-        unsafe { match level.0 {
-            0 => FrameLayout::new_unchecked(1), // 4K页，最低层页
-            1 => FrameLayout::new_unchecked(512), // 2M页
-            2 => FrameLayout::new_unchecked(512 * 512), // 1G页，最高层大页
-            _ => unimplemented!("this level does not exist on Sv39")
-        } }
+        unsafe {
+            match level.0 {
+                0 => FrameLayout::new_unchecked(1),         // 4K页，最低层页
+                1 => FrameLayout::new_unchecked(512),       // 2M页
+                2 => FrameLayout::new_unchecked(512 * 512), // 1G页，最高层大页
+                _ => unimplemented!("this level does not exist on Sv39"),
+            }
+        }
     }
     fn visit_levels_until(level: PageLevel) -> &'static [PageLevel] {
         match level.0 {
@@ -477,7 +516,9 @@ impl PageMode for Sv39 {
     }
     type Entry = Sv39PageEntry;
     type Slot = Sv39PageSlot;
-    fn slot_try_get_entry(slot: &mut Sv39PageSlot) -> Result<&mut Sv39PageEntry, &mut Sv39PageSlot> {
+    fn slot_try_get_entry(
+        slot: &mut Sv39PageSlot,
+    ) -> Result<&mut Sv39PageEntry, &mut Sv39PageSlot> {
         // note(unsafe): slot是合法的
         let ans = unsafe { &mut *(slot as *mut _ as *mut Sv39PageEntry) };
         if ans.flags().contains(Sv39Flags::V) {
@@ -487,7 +528,8 @@ impl PageMode for Sv39 {
         }
     }
     fn init_page_table(table: &mut Self::PageTable) {
-        table.entries = unsafe { core::mem::MaybeUninit::zeroed().assume_init() }; // 全零
+        table.entries = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        // 全零
     }
     type Flags = Sv39Flags;
     fn slot_set_child(slot: &mut Sv39PageSlot, ppn: PhysPageNum) {
@@ -500,7 +542,9 @@ impl PageMode for Sv39 {
     }
     fn entry_is_leaf_page(entry: &mut Sv39PageEntry) -> bool {
         // 如果包含R、W或X项，就是叶子节点。
-        entry.flags().intersects(Sv39Flags::R | Sv39Flags::W | Sv39Flags::X)
+        entry
+            .flags()
+            .intersects(Sv39Flags::R | Sv39Flags::W | Sv39Flags::X)
     }
     fn entry_write_ppn_flags(entry: &mut Sv39PageEntry, ppn: PhysPageNum, flags: Sv39Flags) {
         entry.write_ppn_flags(ppn, flags);
@@ -537,7 +581,6 @@ pub struct Sv39PageSlot {
 pub struct Sv39PageEntry {
     bits: usize,
 }
-
 
 impl Sv39PageEntry {
     #[inline]
@@ -584,9 +627,14 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
         // 新建一个满足根页表对齐要求的帧；虽然代码没有体现，通常对齐要求是1
         let mut root_frame = FrameBox::try_new_in(frame_alloc.clone())?;
         // println!("[kernel-alloc-map-test] Root frame: {:x?}", root_frame.phys_page_num());
-        // 向帧里填入一个空的根页表 
+        // 向帧里填入一个空的根页表
         unsafe { fill_frame_with_initialized_page_table::<A, M>(&mut root_frame) };
-        Ok(Self { root_frame, frames: Vec::new(), frame_alloc, page_mode })
+        Ok(Self {
+            root_frame,
+            frames: Vec::new(),
+            frame_alloc,
+            page_mode,
+        })
     }
     // 得到根页表的地址
     pub fn root_page_number(&self) -> PhysPageNum {
@@ -594,19 +642,27 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
     }
 }
 
-#[inline] unsafe fn unref_ppn_mut<'a, M: PageMode>(ppn: PhysPageNum) -> &'a mut M::PageTable {
+#[inline]
+unsafe fn unref_ppn_mut<'a, M: PageMode>(ppn: PhysPageNum) -> &'a mut M::PageTable {
     let pa = ppn.addr_begin::<M>();
     &mut *(pa.0 as *mut M::PageTable)
 }
 
-#[inline] unsafe fn fill_frame_with_initialized_page_table<A: FrameAllocator, M: PageMode>(b: &mut FrameBox<A>) {
+#[inline]
+unsafe fn fill_frame_with_initialized_page_table<A: FrameAllocator, M: PageMode>(
+    b: &mut FrameBox<A>,
+) {
     let a = &mut *(b.ppn.addr_begin::<M>().0 as *mut M::PageTable);
     M::init_page_table(a);
 }
 
-impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {    
+impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
     // 设置entry。如果寻找的过程中，中间的页表没创建，那么创建它们
-    unsafe fn alloc_get_table(&mut self, entry_level: PageLevel, vpn_start: VirtPageNum) -> Result<&mut M::PageTable, FrameAllocError> {
+    unsafe fn alloc_get_table(
+        &mut self,
+        entry_level: PageLevel,
+        vpn_start: VirtPageNum,
+    ) -> Result<&mut M::PageTable, FrameAllocError> {
         let mut ppn = self.root_frame.phys_page_num();
         for &level in M::visit_levels_before(entry_level) {
             // println!("[] BEFORE PPN = {:x?}", ppn);
@@ -614,7 +670,8 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
             let vidx = M::vpn_index(vpn_start, level);
             match M::slot_try_get_entry(&mut page_table[vidx]) {
                 Ok(entry) => ppn = M::entry_get_ppn(entry),
-                Err(mut slot) => {  // 需要一个内部页表，这里的页表项却没有数据，我们需要填写数据
+                Err(mut slot) => {
+                    // 需要一个内部页表，这里的页表项却没有数据，我们需要填写数据
                     let frame_box = FrameBox::try_new_in(self.frame_alloc.clone())?;
                     M::slot_set_child(&mut slot, frame_box.phys_page_num());
                     // println!("[] Created a new frame box");
@@ -625,21 +682,29 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
         }
         // println!("[kernel-alloc-map-test] in alloc_get_table PPN: {:x?}", ppn);
         let page_table = unref_ppn_mut::<M>(ppn); // 此时ppn是当前所需要修改的页表
-        // 创建了一个没有约束的生命周期。不过我们可以判断它是合法的，因为它的所有者是Self，在Self的周期内都合法
+                                                  // 创建了一个没有约束的生命周期。不过我们可以判断它是合法的，因为它的所有者是Self，在Self的周期内都合法
         Ok(&mut *(page_table as *mut _))
     }
-    pub fn allocate_map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, n: usize, flags: M::Flags) -> Result<(), FrameAllocError> {
+    pub fn allocate_map(
+        &mut self,
+        vpn: VirtPageNum,
+        ppn: PhysPageNum,
+        n: usize,
+        flags: M::Flags,
+    ) -> Result<(), FrameAllocError> {
         for (page_level, vpn_range) in MapPairs::solve(vpn, ppn, n, self.page_mode) {
             // println!("[kernel-alloc-map-test] PAGE LEVEL: {:?}, VPN RANGE: {:x?}", page_level, vpn_range);
             let table = unsafe { self.alloc_get_table(page_level, vpn_range.start) }?;
             let idx_range = M::vpn_index_range(vpn_range.clone(), page_level);
             // println!("[kernel-alloc-map-test] IDX RANGE: {:?}", idx_range);
             for vidx in idx_range {
-                let this_ppn = PhysPageNum(ppn.0 + M::vpn_level_index(vpn_range.start, page_level, vidx).0 - vpn.0);
+                let this_ppn = PhysPageNum(
+                    ppn.0 + M::vpn_level_index(vpn_range.start, page_level, vidx).0 - vpn.0,
+                );
                 // println!("[kernel-alloc-map-test] Table: {:p} Vidx {} -> Ppn {:x?}", table, vidx, this_ppn);
                 match M::slot_try_get_entry(&mut table[vidx]) {
                     Ok(_entry) => panic!("already allocated"),
-                    Err(slot) => M::slot_set_mapping(slot, this_ppn, flags.clone())
+                    Err(slot) => M::slot_set_mapping(slot, this_ppn, flags.clone()),
                 }
             }
         }
@@ -657,12 +722,14 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
             let page_table = unsafe { unref_ppn_mut::<M>(ppn) };
             let vidx = M::vpn_index(vpn, lvl);
             match M::slot_try_get_entry(&mut page_table[vidx]) {
-                Ok(entry) => if M::entry_is_leaf_page(entry) {
-                    return Ok((entry, lvl))
-                } else {
-                    ppn = M::entry_get_ppn(entry)
-                },
-                Err(_slot) => return Err(PageError::InvalidEntry)
+                Ok(entry) => {
+                    if M::entry_is_leaf_page(entry) {
+                        return Ok((entry, lvl));
+                    } else {
+                        ppn = M::entry_get_ppn(entry)
+                    }
+                }
+                Err(_slot) => return Err(PageError::InvalidEntry),
             }
         }
         Err(PageError::NotLeafInLowerestPage)
@@ -675,7 +742,7 @@ pub enum PageError {
     /// 节点不具有有效位
     InvalidEntry,
     /// 第0层页表不能是内部节点
-    NotLeafInLowerestPage
+    NotLeafInLowerestPage,
 }
 
 #[derive(Debug)]
@@ -705,16 +772,19 @@ impl<M: PageMode> MapPairs<M> {
                         ans.push((j, VirtPageNum(vs_prev)..VirtPageNum(vs_cur)));
                     }
                 } else {
-                    if ve_cur != vs_cur { 
+                    if ve_cur != vs_cur {
                         ans.push((j, VirtPageNum(ve_cur)..VirtPageNum(vs_cur)));
                     }
                 }
                 (ve_prev, vs_prev) = (Some(ve_cur), Some(vs_cur));
             }
             break;
-        } 
+        }
         // println!("[SOLVE] Ans = {:x?}", ans);
-        Self { ans_iter: ans.into_iter(), mode }
+        Self {
+            ans_iter: ans.into_iter(),
+            mode,
+        }
     }
 }
 
@@ -726,19 +796,27 @@ impl<M> Iterator for MapPairs<M> {
 }
 
 pub(crate) fn test_map_solve() {
-    let pairs = MapPairs::solve(VirtPageNum(0x90_000), PhysPageNum(0x50_000), 666666, Sv39).collect::<Vec<_>>();
-    assert_eq!(pairs, [
-        (PageLevel(2), VirtPageNum(786432)..VirtPageNum(1048576)), 
-        (PageLevel(1), VirtPageNum(589824)..VirtPageNum(786432)), 
-        (PageLevel(1), VirtPageNum(1048576)..VirtPageNum(1256448)), 
-        (PageLevel(0), VirtPageNum(1256448)..VirtPageNum(1256490))
-    ]);
-    let pairs = MapPairs::solve(VirtPageNum(0x90_001), PhysPageNum(0x50_001), 77777, Sv39).collect::<Vec<_>>();
-    assert_eq!(pairs, [
-        (PageLevel(1), VirtPageNum(590336)..VirtPageNum(667136)), 
-        (PageLevel(0), VirtPageNum(589825)..VirtPageNum(590336)), 
-        (PageLevel(0), VirtPageNum(667136)..VirtPageNum(667602))
-    ]);
+    let pairs = MapPairs::solve(VirtPageNum(0x90_000), PhysPageNum(0x50_000), 666666, Sv39)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        [
+            (PageLevel(2), VirtPageNum(786432)..VirtPageNum(1048576)),
+            (PageLevel(1), VirtPageNum(589824)..VirtPageNum(786432)),
+            (PageLevel(1), VirtPageNum(1048576)..VirtPageNum(1256448)),
+            (PageLevel(0), VirtPageNum(1256448)..VirtPageNum(1256490))
+        ]
+    );
+    let pairs = MapPairs::solve(VirtPageNum(0x90_001), PhysPageNum(0x50_001), 77777, Sv39)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        [
+            (PageLevel(1), VirtPageNum(590336)..VirtPageNum(667136)),
+            (PageLevel(0), VirtPageNum(589825)..VirtPageNum(590336)),
+            (PageLevel(0), VirtPageNum(667136)..VirtPageNum(667602))
+        ]
+    );
     println!("zihai > address map solver test passed");
 }
 
@@ -757,19 +835,19 @@ pub fn get_satp_sv39(asid: AddressSpaceId, ppn: PhysPageNum) -> Satp {
 }
 
 // 帧翻译：在空间1中访问空间2的帧。要求空间1具有恒等映射特性
-pub fn translate_frame_read</*M1, A1, */M2, A2, F>(
-    // as1: &PagedAddrSpace<M1, A1>, 
-    as2: &PagedAddrSpace<M2, A2>, 
-    vaddr2: VirtAddr, 
-    len_bytes2: usize, 
-    f: F
+pub fn translate_frame_read</*M1, A1, */ M2, A2, F>(
+    // as1: &PagedAddrSpace<M1, A1>,
+    as2: &PagedAddrSpace<M2, A2>,
+    vaddr2: VirtAddr,
+    len_bytes2: usize,
+    f: F,
 ) -> Result<(), PageError>
-where 
-    // M1: PageMode, 
+where
+    // M1: PageMode,
     // A1: FrameAllocator + Clone,
-    M2: PageMode, 
+    M2: PageMode,
     A2: FrameAllocator + Clone,
-    F: Fn(PhysPageNum, usize, usize) // 按顺序返回空间1中的帧
+    F: Fn(PhysPageNum, usize, usize), // 按顺序返回空间1中的帧
 {
     // println!("vaddr2 = {:x?}, len_bytes2 = {}", vaddr2, len_bytes2);
     let mut vpn2 = vaddr2.page_number::<M2>();
@@ -788,7 +866,7 @@ where
         // println!("[] {} {} {}", cur_frame_layout.page_size::<M2>(), cur_offset, cur_len);
         remaining_len -= cur_len;
         if remaining_len == 0 {
-            return Ok(())
+            return Ok(());
         }
         cur_offset = 0; // 下一个帧从头开始
         vpn2 = vpn2.next_page_by_level::<M2>(lvl);

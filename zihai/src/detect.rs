@@ -5,11 +5,15 @@
 
 // use core::arch::riscv64;
 use core::arch::asm;
-use riscv::register::{sstatus, stvec::{self, Stvec, TrapMode}, scause::{Scause, Trap, Exception}};
+use riscv::register::{
+    scause::{Exception, Scause, Trap},
+    sstatus,
+    stvec::{self, Stvec, TrapMode},
+};
 
-// detect if hypervisor extension exists on current hart environment
+// Detect if hypervisor extension exists on current hart environment
 //
-// this function tries to read hgatp and returns false if the read operation failed.
+// This function tries to read hgatp and returns false if the read operation failed.
 pub fn detect_h_extension() -> bool {
     // run detection by trap on csrr instruction.
     let ans = with_detect_trap(0, || unsafe {
@@ -19,6 +23,10 @@ pub fn detect_h_extension() -> bool {
     ans != 2
 }
 
+// Tries to execute all instructions defined in clojure `f`.
+// If resulted in an exception, this function returns its exception id.
+//
+// This function is useful to detect if an instruction exists on current environment.
 #[inline]
 fn with_detect_trap(param: usize, f: impl FnOnce()) -> usize {
     // disable interrupts and handle exceptions only
@@ -31,6 +39,7 @@ fn with_detect_trap(param: usize, f: impl FnOnce()) -> usize {
     ans
 }
 
+// rust trap handler for detect exceptions
 extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
     // store returned exception id value into tp register
     // specially: illegal instruction => 2
@@ -45,13 +54,13 @@ extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
             }
             // skip current instruction
             trap_frame.sepc = trap_frame.sepc.wrapping_add(insn_bits);
-        },
+        }
         Trap::Exception(_) => unreachable!(), // FIXME: unexpected instruction errors
         Trap::Interrupt(_) => unreachable!(), // filtered out for sie == false
     }
 }
 
-// get risc-v instruction bits from illegal instruction stval value, or 0 if unknown
+// Gets risc-v instruction bits from illegal instruction stval value, or 0 if unknown
 #[inline]
 fn riscv_illegal_insn_bits(insn: u16) -> usize {
     if insn == 0 {
@@ -63,10 +72,11 @@ fn riscv_illegal_insn_bits(insn: u16) -> usize {
     if insn & 0b11100 != 0b11100 {
         return 4; // 32-bit
     }
-    return 0 // >= 48-bit, unknown from this function by now
+    // FIXME: add >= 48-bit instructions in the future if we need to detect such instrucions
+    return 0; // >= 48-bit, unknown from this function by now
 }
 
-// initialize environment for trap detection and filter in exception only
+// Initialize environment for trap detection and filter in exception only
 #[inline]
 unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
     // clear SIE to handle exception only
@@ -86,7 +96,7 @@ unsafe fn init_detect_trap(param: usize) -> (bool, Stvec, usize) {
     (stored_sie, stored_stvec, stored_tp)
 }
 
-// restore previous hardware states before trap detection
+// Restore previous hardware states before trap detection
 #[inline]
 unsafe fn restore_detect_trap(sie: bool, stvec: Stvec, tp: usize) -> usize {
     // read the return value from tp register, and restore tp value
@@ -101,6 +111,7 @@ unsafe fn restore_detect_trap(sie: bool, stvec: Stvec, tp: usize) -> usize {
     ans
 }
 
+// Trap frame for instruction exception detection
 #[repr(C)]
 struct TrapFrame {
     ra: usize,
@@ -126,6 +137,14 @@ struct TrapFrame {
     stval: usize,
 }
 
+// Assembly trap handler for instruction detection.
+//
+// This trap handler shares the same stack from its prospective caller,
+// the caller must ensure it has abundant stack size for a trap handler.
+//
+// This function should not be used in conventional trap handling,
+// as it does not preserve a special trap stack, and it's designed to
+// handle exceptions only rather than interrupts.
 #[naked]
 unsafe extern "C" fn on_detect_trap() -> ! {
     asm!(

@@ -1,7 +1,7 @@
-use std::process::{self, Command};
-use std::path::{Path, PathBuf};
-use std::env;
 use clap::{Parser, Subcommand};
+use std::env;
+use std::path::{Path, PathBuf};
+use std::process::{self, Command};
 
 #[derive(Parser)]
 #[clap(name = "xtask")]
@@ -27,21 +27,21 @@ fn main() {
     let args = Cli::parse();
 
     match &args.command {
-        Commands::Make { } => {
+        Commands::Make {} => {
             println!("xtask: make hypervisor");
             xtask_build_zihai();
         }
-        Commands::Qemu { } => {
+        Commands::Qemu {} => {
             println!("xtask: make hypervisor and run in QEMU");
             xtask_build_zihai();
             xtask_run_zihai();
         }
-        Commands::Debug { } => {
+        Commands::Debug {} => {
             println!("xtask: make hypervisor and debug in QEMU");
             xtask_build_zihai();
             xtask_debug_zihai();
         }
-        Commands::Gdb { } => {
+        Commands::Gdb {} => {
             println!("xtask: debug hypervisor on GDB server localhost:3333");
             xtask_gdb_zihai();
         }
@@ -106,7 +106,10 @@ fn xtask_debug_zihai() {
 fn xtask_gdb_zihai() {
     let mut command = Command::new("riscv64-unknown-elf-gdb");
     command.current_dir(project_root());
-    command.args(&["--eval-command", "file target/riscv64imac-unknown-none-elf/debug/zihai"]);
+    command.args(&[
+        "--eval-command",
+        "file target/riscv64imac-unknown-none-elf/debug/zihai",
+    ]);
     command.args(&["--eval-command", "target extended-remote localhost:3333"]);
     command.arg("--quiet");
 

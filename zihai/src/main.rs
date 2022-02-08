@@ -5,9 +5,9 @@ extern crate alloc;
 
 #[macro_use]
 mod console;
+mod detect;
 mod mm;
 mod sbi;
-mod detect;
 
 use core::arch::asm;
 use core::mem::MaybeUninit;
@@ -17,7 +17,8 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     // boot hart init
     println!("Welcome to zihai hypervisor");
     let hsm_version = sbi::probe_extension(0x48534D);
-    if hsm_version == 0 { // HSM does not exist under current SBI environment
+    if hsm_version == 0 {
+        // HSM does not exist under current SBI environment
         panic!("no HSM extension exist under current SBI environment");
     }
     println!("zihai > init hart id: {}", hartid);
@@ -38,32 +39,40 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     let mut kernel_addr_space = mm::PagedAddrSpace::try_new_in(mm::Sv39, &frame_alloc)
         .expect("allocate page to create kernel paged address space");
     mm::test_map_solve();
-    kernel_addr_space.allocate_map(
-        mm::VirtAddr(0x80000000).page_number::<mm::Sv39>(), 
-        mm::PhysAddr(0x80000000).page_number::<mm::Sv39>(), 
-        1024,
-        mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X
-    ).expect("allocate one mapped space");
-    kernel_addr_space.allocate_map(
-        mm::VirtAddr(0x80400000).page_number::<mm::Sv39>(), 
-        mm::PhysAddr(0x80400000).page_number::<mm::Sv39>(), 
-        32,
-        mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X
-    ).expect("allocate user program mapped space");
-    kernel_addr_space.allocate_map(
-        mm::VirtAddr(0x80420000).page_number::<mm::Sv39>(), 
-        mm::PhysAddr(0x80420000).page_number::<mm::Sv39>(), 
-        1024 - 32, 
-        mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X
-    ).expect("allocate remaining space");
+    kernel_addr_space
+        .allocate_map(
+            mm::VirtAddr(0x80000000).page_number::<mm::Sv39>(),
+            mm::PhysAddr(0x80000000).page_number::<mm::Sv39>(),
+            1024,
+            mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X,
+        )
+        .expect("allocate one mapped space");
+    kernel_addr_space
+        .allocate_map(
+            mm::VirtAddr(0x80400000).page_number::<mm::Sv39>(),
+            mm::PhysAddr(0x80400000).page_number::<mm::Sv39>(),
+            32,
+            mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X,
+        )
+        .expect("allocate user program mapped space");
+    kernel_addr_space
+        .allocate_map(
+            mm::VirtAddr(0x80420000).page_number::<mm::Sv39>(),
+            mm::PhysAddr(0x80420000).page_number::<mm::Sv39>(),
+            1024 - 32,
+            mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X,
+        )
+        .expect("allocate remaining space");
     mm::test_asid_alloc();
     let max_asid = mm::max_asid();
     let mut asid_alloc = mm::StackAsidAllocator::new(max_asid);
     let kernel_asid = asid_alloc.allocate_asid().expect("alloc kernel asid");
-    let _kernel_satp = unsafe {
-        mm::activate_paged_riscv_sv39(kernel_addr_space.root_page_number(), kernel_asid)
-    };
-    println!("zihai > entered kernel virtual address space: {}", kernel_asid);
+    let _kernel_satp =
+        unsafe { mm::activate_paged_riscv_sv39(kernel_addr_space.root_page_number(), kernel_asid) };
+    println!(
+        "zihai > entered kernel virtual address space: {}",
+        kernel_asid
+    );
 
     // call sbi remote retentive suspension, use sbi 0.3 to wake other harts
 
@@ -136,7 +145,8 @@ pub unsafe extern "C" fn start() -> ! {
 
 // fixme: better code format
 unsafe extern "C" fn err_sbi_version(wrong_version: usize) -> ! {
-    let string = "zihai: this hypervisor software must run over SBI version >= 0.3, but we have version ";
+    let string =
+        "zihai: this hypervisor software must run over SBI version >= 0.3, but we have version ";
     for byte in string.bytes() {
         asm!("li a7, 0x01", "mv a6, {}", "ecall", in(reg) byte as usize);
     }
