@@ -456,7 +456,6 @@ pub struct Sv39;
 impl PageMode for Sv39 {
     const FRAME_SIZE_BITS: usize = 12;
     const PPN_BITS: usize = 44;
-    type PageTable = Sv39PageTable;
     fn get_layout_for_level(level: PageLevel) -> FrameLayout {
         unsafe {
             match level.0 {
@@ -514,8 +513,13 @@ impl PageMode for Sv39 {
             _ => unimplemented!("this level does not exist on Sv39"),
         })
     }
-    type Entry = Sv39PageEntry;
+    type PageTable = Sv39PageTable;
+    fn init_page_table(table: &mut Self::PageTable) {
+        table.entries = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        // 全零
+    }
     type Slot = Sv39PageSlot;
+    type Entry = Sv39PageEntry;
     fn slot_try_get_entry(
         slot: &mut Sv39PageSlot,
     ) -> Result<&mut Sv39PageEntry, &mut Sv39PageSlot> {
@@ -526,10 +530,6 @@ impl PageMode for Sv39 {
         } else {
             Err(slot)
         }
-    }
-    fn init_page_table(table: &mut Self::PageTable) {
-        table.entries = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
-        // 全零
     }
     type Flags = Sv39Flags;
     fn slot_set_child(slot: &mut Sv39PageSlot, ppn: PhysPageNum) {
@@ -732,7 +732,7 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
                 Err(_slot) => return Err(PageError::InvalidEntry),
             }
         }
-        Err(PageError::NotLeafInLowerestPage)
+        Err(PageError::NotLeafInLowestPage)
     }
 }
 
@@ -742,7 +742,7 @@ pub enum PageError {
     /// 节点不具有有效位
     InvalidEntry,
     /// 第0层页表不能是内部节点
-    NotLeafInLowerestPage,
+    NotLeafInLowestPage,
 }
 
 #[derive(Debug)]
