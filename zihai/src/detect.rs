@@ -38,11 +38,11 @@ extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
     // if illegal instruction, skip current instruction
     match trap_frame.scause.cause() {
         Trap::Exception(Exception::IllegalInstruction) => {
-            let insn_bits = if trap_frame.stval != 0 {
-                riscv_insn_bits(trap_frame.stval)
-            } else {
-                4 // FIXME: read instruction, then judge how bits it would read
-            };
+            let mut insn_bits = riscv_illegal_insn_bits((trap_frame.stval & 0xFFFF) as u16);
+            if insn_bits == 0 {
+                let insn_half = unsafe { *(trap_frame.sepc as *const u16) };
+                insn_bits = riscv_illegal_insn_bits(insn_half);
+            }
             // skip current instruction
             trap_frame.sepc = trap_frame.sepc.wrapping_add(insn_bits);
         },
@@ -51,15 +51,19 @@ extern "C" fn rust_detect_trap(trap_frame: &mut TrapFrame) {
     }
 }
 
+// get risc-v instruction bits from illegal instruction stval value, or 0 if unknown
 #[inline]
-fn riscv_insn_bits(insn: usize) -> usize {
+fn riscv_illegal_insn_bits(insn: u16) -> usize {
+    if insn == 0 {
+        return 0; // stval[0..16] == 0, unknown
+    }
     if insn & 0b11 != 0b11 {
         return 2; // 16-bit
     }
     if insn & 0b11100 != 0b11100 {
         return 4; // 32-bit
     }
-    return 4 // unknown by now
+    return 0 // >= 48-bit, unknown from this function by now
 }
 
 // initialize environment for trap detection and filter in exception only
