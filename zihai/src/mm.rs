@@ -5,10 +5,11 @@
 
 use alloc::alloc::Layout;
 use alloc::vec::Vec;
-use bit_field::BitField;
-use buddy_system_allocator::LockedHeap;
 use core::arch::riscv64;
 use core::{fmt, ops::Range};
+
+use bit_field::BitField;
+use buddy_system_allocator::LockedHeap;
 use riscv::register::satp::{self, Mode, Satp};
 
 const KERNEL_HEAP_SIZE: usize = 64 * 1024;
@@ -556,7 +557,7 @@ impl PageMode for Sv39 {
 
 #[repr(C)]
 pub struct Sv39PageTable {
-    entries: [Sv39PageSlot; 512], // todo: other modes
+    entries: [Sv39PageSlot; 512],
 }
 
 impl core::ops::Index<usize> for Sv39PageTable {
@@ -607,6 +608,100 @@ bitflags::bitflags! {
         const G = 1 << 5;
         const A = 1 << 6;
         const D = 1 << 7;
+    }
+}
+
+// Sv39x4 paged memory system; used in hypervisor G-stage address translation under RV64.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Sv39x4;
+
+impl Sv39x4 {
+    // returns vpn mask of Sv39x4 by page level
+    #[inline]
+    fn vpn_mask_by_level(level: PageLevel) -> usize {
+        assert!(level.0 <= 2, "Sv39x4 only have page level 0, 1 or 2");
+        // Vpn[2] would be 11 bits, Vpn[0..=1] would be 9 bits
+        match level.0 {
+            0..=1 => 511,
+            2 => 2047,
+            _ => unreachable!(),
+        }
+    }
+}
+
+// todo: To accommodate the 2 extra bits, the root page table (only)
+// is expanded by a factor of four to be 16 KiB instead of the usual 4 KiB.
+// Matching its larger size, the root page table also must be aligned to a 16 KiB
+// boundary instead of the usual 4 KiB page boundary.
+
+// Under Sv39x4, virtual address bits would be 41 other than 39;
+// other attributes would be the same as Sv39.
+// todo: incomplete design considering 16-KiB root page
+impl PageMode for Sv39x4 {
+    const FRAME_SIZE_BITS: usize = 12;
+    // 4-KiB
+    const PPN_BITS: usize = 44;
+    // Sv39x4 page levels are the same as Sv39
+    fn get_layout_for_level(level: PageLevel) -> FrameLayout {
+        Sv39::get_layout_for_level(level)
+    }
+    fn visit_levels_until(level: PageLevel) -> &'static [PageLevel] {
+        Sv39::visit_levels_until(level)
+    }
+    fn visit_levels_before(level: PageLevel) -> &'static [PageLevel] {
+        Sv39::visit_levels_before(level)
+    }
+    fn visit_levels_from(level: PageLevel) -> &'static [PageLevel] {
+        Sv39::visit_levels_from(level)
+    }
+    // In Sv39x4 vpn[2] would be 11 bits, vpn[0..=1] would be 9 bits
+    fn vpn_index(vpn: VirtPageNum, level: PageLevel) -> usize {
+        // `vpn_mask_by_level` will panic if `level` does not exist on Sv39x4
+        (vpn.0 >> (level.0 * 9)) & Sv39x4::vpn_mask_by_level(level)
+    }
+    fn vpn_index_range(vpn_range: Range<VirtPageNum>, level: PageLevel) -> Range<usize> {
+        let mask = Sv39x4::vpn_mask_by_level(level); // will panic if `level` does not <= 2
+        let start = (vpn_range.start.0 >> (level.0 * 9)) & mask;
+        let mut end = (vpn_range.end.0 >> (level.0 * 9)) & mask;
+        if level.0 <= 1 {
+            let start_idx1 = vpn_range.start.0 >> ((level.0 + 1) * 9);
+            let end_idx1 = vpn_range.end.0 >> ((level.0 + 1) * 9);
+            if end_idx1 > start_idx1 {
+                end = mask + 1;
+            }
+        }
+        start..end
+    }
+    fn vpn_level_index(vpn: VirtPageNum, level: PageLevel, idx: usize) -> VirtPageNum {
+        Sv39::vpn_level_index(vpn, level, idx) // todo: figure out what is this
+    }
+    // Other than root table being 16-KiB, Sv39x4 has the same page table design as Sv39
+    type PageTable = Sv39PageTable;
+    // todo: 16-KiB root page table
+    fn init_page_table(table: &mut Self::PageTable) {
+        Sv39::init_page_table(table)
+    }
+    // Sv39x4 has same page table entry structure as Sv39
+    type Slot = Sv39PageSlot;
+    type Entry = Sv39PageEntry;
+    fn slot_try_get_entry(slot: &mut Self::Slot) -> Result<&mut Self::Entry, &mut Self::Slot> {
+        Sv39::slot_try_get_entry(slot)
+    }
+    type Flags = Sv39Flags;
+    fn slot_set_child(slot: &mut Self::Slot, ppn: PhysPageNum) {
+        Sv39::slot_set_child(slot, ppn)
+    }
+    fn slot_set_mapping(slot: &mut Self::Slot, ppn: PhysPageNum, flags: Self::Flags) {
+        Sv39::slot_set_mapping(slot, ppn, flags)
+    }
+    fn entry_is_leaf_page(entry: &mut Self::Entry) -> bool {
+        Sv39::entry_is_leaf_page(entry)
+    }
+    fn entry_write_ppn_flags(entry: &mut Self::Entry, ppn: PhysPageNum, flags: Self::Flags) {
+        Sv39::entry_write_ppn_flags(entry, ppn, flags)
+    }
+    fn entry_get_ppn(entry: &Self::Entry) -> PhysPageNum {
+        Sv39::entry_get_ppn(entry)
     }
 }
 
