@@ -769,7 +769,8 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
                 Ok(entry) => ppn = M::entry_get_ppn(entry),
                 Err(mut slot) => {
                     // 需要一个内部页表，这里的页表项却没有数据，我们需要填写数据
-                    let frame_box = FrameBox::try_new_in(self.frame_alloc.clone())?;
+                    let mut frame_box = FrameBox::try_new_in(self.frame_alloc.clone())?;
+                    fill_frame_with_initialized_page_table::<A, M>(&mut frame_box);
                     M::slot_set_child(&mut slot, frame_box.phys_page_num());
                     // println!("[] Created a new frame box");
                     ppn = frame_box.phys_page_num();
