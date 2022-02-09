@@ -3,14 +3,14 @@
 #![no_main]
 extern crate alloc;
 
+use core::arch::asm;
+use core::mem::MaybeUninit;
+
 #[macro_use]
 mod console;
 mod detect;
 mod mm;
 mod sbi;
-
-use core::arch::asm;
-use core::mem::MaybeUninit;
 
 // boot hart start
 pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
@@ -59,8 +59,9 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     let max_asid = mm::max_asid();
     let mut asid_alloc = mm::StackAsidAllocator::new(max_asid);
     let kernel_asid = asid_alloc.allocate_asid().expect("alloc kernel asid");
-    let _kernel_satp =
-        unsafe { mm::activate_paged_riscv_sv39(kernel_addr_space.root_page_number(), kernel_asid) };
+    let _kernel_satp = unsafe {
+        mm::activate_supervisor_paged_riscv_sv39(kernel_addr_space.root_page_number(), kernel_asid)
+    };
     println!(
         "zihai > entered kernel virtual address space: {}",
         kernel_asid

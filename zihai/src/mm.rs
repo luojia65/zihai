@@ -90,7 +90,7 @@ impl VirtPageNum {
     //     VirtAddr(self.0 << M::FRAME_SIZE_BITS)
     // }
     pub fn next_page_by_level<M: PageMode>(&self, lvl: PageLevel) -> VirtPageNum {
-        let step = M::get_layout_for_level(lvl).frame_align();
+        let step = M::get_layout_for_level(lvl).align_in_frames();
         VirtPageNum(self.0.wrapping_add(step))
     }
 }
@@ -138,27 +138,6 @@ impl StackFrameAllocator {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct FrameAllocError;
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct FrameLayout {
-    // 对齐到的页帧数。比如，如果是1，说明按字节运算，对齐到4K字节，
-    // 如果是512，对齐到2M字节；如果是512*512，对齐到1G字节。
-    frame_align: usize,
-}
-
-// 应当从PageMode::get_layout_for_level中获得
-impl FrameLayout {
-    // 未检查参数，用于实现PageMode
-    pub const unsafe fn new_unchecked(frame_align: usize) -> Self {
-        Self { frame_align }
-    }
-    pub const fn frame_align(&self) -> usize {
-        self.frame_align
-    }
-    pub fn page_size<M: PageMode>(&self) -> usize {
-        self.frame_align << M::FRAME_SIZE_BITS
-    }
-}
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct FrameLayoutError;
@@ -397,18 +376,48 @@ impl<A: FrameAllocator> Drop for FrameBox<A> {
 //
 // 如果虚拟内存的模式是直接映射或者线性映射，这将不属于分页模式的范围。应当混合使用其它的地址空间，综合成为更大的地址空间。
 pub trait PageMode: Copy {
-    // 当前分页模式下，页帧大小的二进制位数。例如，4K页为12位。
+    /// Number of binary bits of the number in bytes each *frame* would contain under current page mode.
+    ///
+    /// *Frames* are defined as memory blocks with the length of the greatest common divisor of all
+    /// possible page table sizes under current page mode.
+    /// Each page under current mode should contain integer multiples of frames.
+    ///
+    /// Simple page modes may contain only one frame for page table of any levels.
+    /// If such mode contains only 4KiB sized pages, value of frame size bits would be 12.
     const FRAME_SIZE_BITS: usize;
     // 当前分页模式下，物理页号的位数
     const PPN_BITS: usize;
-    // 得到这一层大页物理地址最低的对齐要求
-    fn get_layout_for_level(level: PageLevel) -> FrameLayout;
+    /// Number of maximum page levels this mode supports
+    const MAX_PAGE_LEVELS: u8;
+
+    const PAGE_ENTRIES_BITS: u8;
+    fn get_layout_for_level(level: PageLevel) -> PageLayout {
+        // lowest possible leaf level alignment
+        let mut align_in_frames = 1_usize;
+        // for every higher level, physical address alignment would multiply by
+        for _ in 0..level.0 {
+            if align_in_frames.leading_zeros() < Self::PAGE_ENTRIES_BITS as u32 {
+                panic!("too much page levels")
+            }
+            align_in_frames <<= Self::PAGE_ENTRIES_BITS;
+        }
+        unsafe { PageLayout::new_unchecked(align_in_frames) }
+    }
     // 得到从高到低的页表等级
-    fn visit_levels_until(level: PageLevel) -> &'static [PageLevel];
+    fn visit_levels_until(level: PageLevel) -> LevelIter {
+        assert!(level.0 < Self::MAX_PAGE_LEVELS, "page level doesn't exist");
+        LevelIter::falling_includes(Self::MAX_PAGE_LEVELS - 1, level.0)
+    }
     // 得到从高到低的页表等级，不包括level
-    fn visit_levels_before(level: PageLevel) -> &'static [PageLevel];
+    fn visit_levels_before(level: PageLevel) -> LevelIter {
+        assert!(level.0 < Self::MAX_PAGE_LEVELS, "page level doesn't exist");
+        LevelIter::falling_excludes(Self::MAX_PAGE_LEVELS - 1, level.0)
+    }
     // 得到从高到低的页表等级
-    fn visit_levels_from(level: PageLevel) -> &'static [PageLevel];
+    fn visit_levels_from(level: PageLevel) -> LevelIter {
+        assert!(level.0 < Self::MAX_PAGE_LEVELS, "page level doesn't exist");
+        LevelIter::falling_includes(level.0, 0)
+    }
     // 得到一个虚拟页号对应等级的索引
     fn vpn_index(vpn: VirtPageNum, level: PageLevel) -> usize;
     // 得到一段虚拟页号对应该等级索引的区间；如果超过此段最大的索引，返回索引的结束值为索引的最大值
@@ -439,14 +448,123 @@ pub trait PageMode: Copy {
     fn entry_get_ppn(entry: &Self::Entry) -> PhysPageNum;
 }
 
-// 我们认为今天的分页系统都是分为不同的等级，就是多级页表，这里表示页表的等级是多少
-// todo: 实现一些函数，用于分页算法
+/// Levels of paged memory systems
+///
+/// Higher page level of any page table tree would have bigger page level numbers,
+/// the lowest possible leaf level would be defined as level zero.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PageLevel(u8);
 
 impl PageLevel {
+    /// Lowest leaf level possible of any paged memory system
     pub const fn leaf_level() -> Self {
         Self(0)
+    }
+}
+
+/// Iterator of page levels, can be forward or backward.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LevelIter {
+    remaining_min: u8,
+    remaining_max: u8,
+    include_end: bool,
+    towards_higher: bool,
+}
+
+impl LevelIter {
+    #[allow(unused)]
+    #[inline]
+    fn rising_includes(begin: u8, end: u8) -> Self {
+        assert!(begin <= end);
+        LevelIter {
+            remaining_min: begin,
+            remaining_max: end,
+            include_end: true,
+            towards_higher: true,
+        }
+    }
+    #[inline]
+    fn falling_includes(begin: u8, end: u8) -> Self {
+        assert!(begin >= end);
+        LevelIter {
+            remaining_min: end,
+            remaining_max: begin,
+            include_end: true,
+            towards_higher: false,
+        }
+    }
+    #[allow(unused)]
+    #[inline]
+    fn rising_excludes(begin: u8, end: u8) -> Self {
+        assert!(begin <= end);
+        LevelIter {
+            remaining_min: begin,
+            remaining_max: end,
+            include_end: false,
+            towards_higher: true,
+        }
+    }
+    #[inline]
+    fn falling_excludes(begin: u8, end: u8) -> Self {
+        assert!(begin >= end);
+        LevelIter {
+            remaining_min: end,
+            remaining_max: begin,
+            include_end: false,
+            towards_higher: false,
+        }
+    }
+}
+
+impl Iterator for LevelIter {
+    type Item = PageLevel;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining_min == self.remaining_max {
+            return if !self.include_end {
+                None
+            } else {
+                self.include_end = false; // stop next iteration
+                Some(PageLevel(self.remaining_min))
+            };
+        }
+        let ans = if self.towards_higher {
+            PageLevel(self.remaining_min)
+        } else {
+            PageLevel(self.remaining_max)
+        };
+        assert!(self.remaining_min < self.remaining_max);
+        if self.towards_higher {
+            self.remaining_min += 1;
+        } else {
+            self.remaining_max -= 1;
+        }
+        Some(ans)
+    }
+}
+
+/// Size and alignment settings of pages
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct PageLayout {
+    /// How many *frames* this page would align to.
+    ///
+    /// If one frame equals to 4K bytes, then frame_align 1 describes alignment to
+    /// 4K bytes, 512 describes 2M bytes, 512*512 describes 1G bytes.
+    align_in_frames: usize,
+}
+
+// 应当从PageMode::get_layout_for_level中获得
+impl PageLayout {
+    // 未检查参数，用于实现PageMode
+    pub const unsafe fn new_unchecked(align_in_frames: usize) -> Self {
+        Self { align_in_frames }
+    }
+    pub const fn align_in_frames(&self) -> usize {
+        self.align_in_frames
+    }
+    pub fn page_size<M: PageMode>(&self) -> usize {
+        self.align_in_frames << M::FRAME_SIZE_BITS
     }
 }
 
@@ -457,40 +575,8 @@ pub struct Sv39;
 impl PageMode for Sv39 {
     const FRAME_SIZE_BITS: usize = 12;
     const PPN_BITS: usize = 44;
-    fn get_layout_for_level(level: PageLevel) -> FrameLayout {
-        unsafe {
-            match level.0 {
-                0 => FrameLayout::new_unchecked(1),         // 4K页，最低层页
-                1 => FrameLayout::new_unchecked(512),       // 2M页
-                2 => FrameLayout::new_unchecked(512 * 512), // 1G页，最高层大页
-                _ => unimplemented!("this level does not exist on Sv39"),
-            }
-        }
-    }
-    fn visit_levels_until(level: PageLevel) -> &'static [PageLevel] {
-        match level.0 {
-            0 => &[PageLevel(2), PageLevel(1), PageLevel(0)],
-            1 => &[PageLevel(2), PageLevel(1)],
-            2 => &[PageLevel(2)],
-            _ => unimplemented!("this level does not exist on Sv39"),
-        }
-    }
-    fn visit_levels_before(level: PageLevel) -> &'static [PageLevel] {
-        match level.0 {
-            0 => &[PageLevel(2), PageLevel(1)],
-            1 => &[PageLevel(2)],
-            2 => &[],
-            _ => unimplemented!("this level does not exist on Sv39"),
-        }
-    }
-    fn visit_levels_from(level: PageLevel) -> &'static [PageLevel] {
-        match level.0 {
-            0 => &[PageLevel(0)],
-            1 => &[PageLevel(1), PageLevel(0)],
-            2 => &[PageLevel(2), PageLevel(1), PageLevel(0)],
-            _ => unimplemented!("this level does not exist on Sv39"),
-        }
-    }
+    const MAX_PAGE_LEVELS: u8 = 3;
+    const PAGE_ENTRIES_BITS: u8 = 9;
     fn vpn_index(vpn: VirtPageNum, level: PageLevel) -> usize {
         (vpn.0 >> (level.0 * 9)) & 511
     }
@@ -516,8 +602,8 @@ impl PageMode for Sv39 {
     }
     type PageTable = Sv39PageTable;
     fn init_page_table(table: &mut Self::PageTable) {
+        // Zero init
         table.entries = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
-        // 全零
     }
     type Slot = Sv39PageSlot;
     type Entry = Sv39PageEntry;
@@ -639,21 +725,10 @@ impl Sv39x4 {
 // todo: incomplete design considering 16-KiB root page
 impl PageMode for Sv39x4 {
     const FRAME_SIZE_BITS: usize = 12;
-    // 4-KiB
     const PPN_BITS: usize = 44;
-    // Sv39x4 page levels are the same as Sv39
-    fn get_layout_for_level(level: PageLevel) -> FrameLayout {
-        Sv39::get_layout_for_level(level)
-    }
-    fn visit_levels_until(level: PageLevel) -> &'static [PageLevel] {
-        Sv39::visit_levels_until(level)
-    }
-    fn visit_levels_before(level: PageLevel) -> &'static [PageLevel] {
-        Sv39::visit_levels_before(level)
-    }
-    fn visit_levels_from(level: PageLevel) -> &'static [PageLevel] {
-        Sv39::visit_levels_from(level)
-    }
+    // Sv39x4 page levels are the same as Sv39 except that they are with bigger root pages
+    const MAX_PAGE_LEVELS: u8 = 3;
+    const PAGE_ENTRIES_BITS: u8 = 9;
     // In Sv39x4 vpn[2] would be 11 bits, vpn[0..=1] would be 9 bits
     fn vpn_index(vpn: VirtPageNum, level: PageLevel) -> usize {
         // `vpn_mask_by_level` will panic if `level` does not exist on Sv39x4
@@ -753,36 +828,6 @@ unsafe fn fill_frame_with_initialized_page_table<A: FrameAllocator, M: PageMode>
 }
 
 impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
-    // 设置entry。如果寻找的过程中，中间的页表没创建，那么创建它们
-    // should run on identical mapping (ppn == vpn) or paged mapping disabled
-    unsafe fn alloc_get_table(
-        &mut self,
-        entry_level: PageLevel,
-        vpn_start: VirtPageNum,
-    ) -> Result<&mut M::PageTable, FrameAllocError> {
-        let mut ppn = self.root_frame.phys_page_num();
-        for &level in M::visit_levels_before(entry_level) {
-            // println!("[] BEFORE PPN = {:x?}", ppn);
-            let page_table = unref_ppn_mut::<M>(ppn);
-            let vidx = M::vpn_index(vpn_start, level);
-            match M::slot_try_get_entry(&mut page_table[vidx]) {
-                Ok(entry) => ppn = M::entry_get_ppn(entry),
-                Err(mut slot) => {
-                    // 需要一个内部页表，这里的页表项却没有数据，我们需要填写数据
-                    let mut frame_box = FrameBox::try_new_in(self.frame_alloc.clone())?;
-                    fill_frame_with_initialized_page_table::<A, M>(&mut frame_box);
-                    M::slot_set_child(&mut slot, frame_box.phys_page_num());
-                    // println!("[] Created a new frame box");
-                    ppn = frame_box.phys_page_num();
-                    self.frames.push(frame_box);
-                }
-            }
-        }
-        // println!("[kernel-alloc-map-test] in alloc_get_table PPN: {:x?}", ppn);
-        let page_table = unref_ppn_mut::<M>(ppn); // 此时ppn是当前所需要修改的页表
-                                                  // 创建了一个没有约束的生命周期。不过我们可以判断它是合法的，因为它的所有者是Self，在Self的周期内都合法
-        Ok(&mut *(page_table as *mut _))
-    }
     pub fn allocate_map(
         &mut self,
         vpn: VirtPageNum,
@@ -808,6 +853,39 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
         }
         Ok(())
     }
+}
+
+impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
+    // 设置entry。如果寻找的过程中，中间的页表没创建，那么创建它们
+    // should run on identical mapping (ppn == vpn) or paged mapping disabled
+    unsafe fn alloc_get_table(
+        &mut self,
+        entry_level: PageLevel,
+        vpn_start: VirtPageNum,
+    ) -> Result<&mut M::PageTable, FrameAllocError> {
+        let mut ppn = self.root_frame.phys_page_num();
+        for level in M::visit_levels_before(entry_level) {
+            // println!("[] BEFORE PPN = {:x?}", ppn);
+            let page_table = unref_ppn_mut::<M>(ppn);
+            let vidx = M::vpn_index(vpn_start, level);
+            match M::slot_try_get_entry(&mut page_table[vidx]) {
+                Ok(entry) => ppn = M::entry_get_ppn(entry),
+                Err(mut slot) => {
+                    // 需要一个内部页表，这里的页表项却没有数据，我们需要填写数据
+                    let mut frame_box = FrameBox::try_new_in(self.frame_alloc.clone())?;
+                    fill_frame_with_initialized_page_table::<A, M>(&mut frame_box);
+                    M::slot_set_child(&mut slot, frame_box.phys_page_num());
+                    // println!("[] Created a new frame box");
+                    ppn = frame_box.phys_page_num();
+                    self.frames.push(frame_box);
+                }
+            }
+        }
+        // println!("[kernel-alloc-map-test] in alloc_get_table PPN: {:x?}", ppn);
+        let page_table = unref_ppn_mut::<M>(ppn); // 此时ppn是当前所需要修改的页表
+                                                  // 创建了一个没有约束的生命周期。不过我们可以判断它是合法的，因为它的所有者是Self，在Self的周期内都合法
+        Ok(&mut *(page_table as *mut _))
+    }
     // pub fn unmap(&mut self, vpn: VirtPageNum) {
     //     todo!()
     // }
@@ -815,7 +893,7 @@ impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
     /// 根据虚拟页号查询物理页号，可能出错。
     pub fn find_ppn(&self, vpn: VirtPageNum) -> Result<(&M::Entry, PageLevel), PageError> {
         let mut ppn = self.root_frame.phys_page_num();
-        for &lvl in M::visit_levels_until(PageLevel::leaf_level()) {
+        for lvl in M::visit_levels_until(PageLevel::leaf_level()) {
             // 注意: 要求内核对页表空间有恒等映射，可以直接解释物理地址
             let page_table = unsafe { unref_ppn_mut::<M>(ppn) };
             let vidx = M::vpn_index(vpn, lvl);
@@ -852,14 +930,14 @@ pub struct MapPairs<M> {
 impl<M: PageMode> MapPairs<M> {
     pub fn solve(vpn: VirtPageNum, ppn: PhysPageNum, n: usize, mode: M) -> Self {
         let mut ans = Vec::new();
-        for &i in M::visit_levels_until(PageLevel::leaf_level()) {
-            let align = M::get_layout_for_level(i).frame_align();
+        for i in M::visit_levels_until(PageLevel::leaf_level()) {
+            let align = M::get_layout_for_level(i).align_in_frames();
             if usize::wrapping_sub(vpn.0, ppn.0) % align != 0 || n < align {
                 continue;
             }
             let (mut ve_prev, mut vs_prev) = (None, None);
-            for &j in M::visit_levels_from(i) {
-                let align_cur = M::get_layout_for_level(j).frame_align();
+            for j in M::visit_levels_from(i) {
+                let align_cur = M::get_layout_for_level(j).align_in_frames();
                 let ve_cur = align_cur * ((vpn.0 + align_cur - 1) / align_cur); // a * roundup(v / a)
                 let vs_cur = align_cur * ((vpn.0 + n) / align_cur); // a * rounddown((v+n) / a)
                 if let (Some(ve_prev), Some(vs_prev)) = (ve_prev, vs_prev) {
@@ -894,6 +972,51 @@ impl<M> Iterator for MapPairs<M> {
 }
 
 pub(crate) fn test_map_solve() {
+    let layout_frames_sv39 = [
+        (PageLevel(0), 1),
+        (PageLevel(1), 512),
+        (PageLevel(2), 512 * 512),
+    ];
+    for (level, align_in_frames) in layout_frames_sv39 {
+        assert_eq!(
+            Sv39::get_layout_for_level(level).align_in_frames(),
+            align_in_frames
+        );
+    }
+    let visit_levels_until_sv39: [(PageLevel, &'static [PageLevel]); 3] = [
+        (PageLevel(0), &[PageLevel(2), PageLevel(1), PageLevel(0)]),
+        (PageLevel(1), &[PageLevel(2), PageLevel(1)]),
+        (PageLevel(2), &[PageLevel(2)]),
+    ];
+    for (level, iter_result) in visit_levels_until_sv39 {
+        assert_eq!(
+            Sv39::visit_levels_until(level).collect::<Vec<_>>(),
+            iter_result,
+        );
+    }
+    let visit_levels_before_sv39: [(PageLevel, &'static [PageLevel]); 3] = [
+        (PageLevel(0), &[PageLevel(2), PageLevel(1)]),
+        (PageLevel(1), &[PageLevel(2)]),
+        (PageLevel(2), &[]),
+    ];
+    for (level, iter_result) in visit_levels_before_sv39 {
+        assert_eq!(
+            Sv39::visit_levels_before(level).collect::<Vec<_>>(),
+            iter_result,
+        );
+    }
+    let visit_levels_from_sv39: [(PageLevel, &'static [PageLevel]); 3] = [
+        (PageLevel(0), &[PageLevel(0)]),
+        (PageLevel(1), &[PageLevel(1), PageLevel(0)]),
+        (PageLevel(2), &[PageLevel(2), PageLevel(1), PageLevel(0)]),
+    ];
+    for (level, iter_result) in visit_levels_from_sv39 {
+        assert_eq!(
+            Sv39::visit_levels_from(level).collect::<Vec<_>>(),
+            iter_result,
+        );
+    }
+
     let pairs = MapPairs::solve(VirtPageNum(0x90_000), PhysPageNum(0x50_000), 666666, Sv39)
         .collect::<Vec<_>>();
     assert_eq!(
@@ -915,12 +1038,35 @@ pub(crate) fn test_map_solve() {
             (PageLevel(0), VirtPageNum(667136)..VirtPageNum(667602))
         ]
     );
+    let pairs = MapPairs::solve(VirtPageNum(0x12_345), PhysPageNum(0x22_345), 888888, Sv39x4)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        [
+            (PageLevel(1), VirtPageNum(74752)..VirtPageNum(963072)),
+            (PageLevel(0), VirtPageNum(74565)..VirtPageNum(74752)),
+            (PageLevel(0), VirtPageNum(963072)..VirtPageNum(963453))
+        ]
+    );
+    let pairs = MapPairs::solve(
+        VirtPageNum(0x400000),
+        PhysPageNum(0x200000),
+        0x40000000,
+        Sv39x4,
+    )
+    .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        [(PageLevel(2), VirtPageNum(4194304)..VirtPageNum(1077936128))]
+    );
     println!("zihai > address map solver test passed");
 }
 
-// 切换地址空间，同时需要提供1.地址空间的详细设置 2.地址空间编号
-// 同时返回：satp寄存器的值
-pub unsafe fn activate_paged_riscv_sv39(root_ppn: PhysPageNum, asid: AddressSpaceId) -> Satp {
+// activate Sv39 HS-mode supervisor translation
+pub unsafe fn activate_supervisor_paged_riscv_sv39(
+    root_ppn: PhysPageNum,
+    asid: AddressSpaceId,
+) -> Satp {
     satp::set(Mode::Sv39, asid.0 as usize, root_ppn.0);
     riscv64::sfence_vma_asid(asid.0 as usize);
     satp::read()
