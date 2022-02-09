@@ -648,6 +648,7 @@ unsafe fn unref_ppn_mut<'a, M: PageMode>(ppn: PhysPageNum) -> &'a mut M::PageTab
     &mut *(pa.0 as *mut M::PageTable)
 }
 
+// note: kernel identical mapping only
 #[inline]
 unsafe fn fill_frame_with_initialized_page_table<A: FrameAllocator, M: PageMode>(
     b: &mut FrameBox<A>,
@@ -658,6 +659,7 @@ unsafe fn fill_frame_with_initialized_page_table<A: FrameAllocator, M: PageMode>
 
 impl<M: PageMode, A: FrameAllocator + Clone> PagedAddrSpace<M, A> {
     // 设置entry。如果寻找的过程中，中间的页表没创建，那么创建它们
+    // should run on identical mapping (ppn == vpn) or paged mapping disabled
     unsafe fn alloc_get_table(
         &mut self,
         entry_level: PageLevel,

@@ -33,7 +33,7 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     mm::heap_init();
     mm::test_frame_alloc();
     // there's only one frame allocator no matter how much core the system have
-    let from = mm::PhysAddr(0x80420000).page_number::<mm::Sv39>();
+    let from = mm::PhysAddr(0x80400000).page_number::<mm::Sv39>();
     let to = mm::PhysAddr(0x80800000).page_number::<mm::Sv39>(); // fixed for qemu
     let frame_alloc = spin::Mutex::new(mm::StackFrameAllocator::new(from, to));
     let mut kernel_addr_space = mm::PagedAddrSpace::try_new_in(mm::Sv39, &frame_alloc)
@@ -46,20 +46,12 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
             1024,
             mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X,
         )
-        .expect("allocate one mapped space");
+        .expect("allocate kernel and bootloader environment mapped space");
     kernel_addr_space
         .allocate_map(
             mm::VirtAddr(0x80400000).page_number::<mm::Sv39>(),
             mm::PhysAddr(0x80400000).page_number::<mm::Sv39>(),
-            32,
-            mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X,
-        )
-        .expect("allocate user program mapped space");
-    kernel_addr_space
-        .allocate_map(
-            mm::VirtAddr(0x80420000).page_number::<mm::Sv39>(),
-            mm::PhysAddr(0x80420000).page_number::<mm::Sv39>(),
-            1024 - 32,
+            1024,
             mm::Sv39Flags::R | mm::Sv39Flags::W | mm::Sv39Flags::X,
         )
         .expect("allocate remaining space");
@@ -79,6 +71,8 @@ pub extern "C" fn rust_init(hartid: usize, opaque: usize) {
     sbi::reset(0x00000000, 0x00000000); // shutdown // todo: remove
 }
 
+// FIXME: after hart suspension, stack pointer register `sp` remains an undefined state
+// set register `sp` before higher programming language procedure
 pub extern "C" fn rust_init_harts(_opaque: usize) {
     // join working queue, ...
 }
