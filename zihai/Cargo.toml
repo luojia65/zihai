@@ -9,5 +9,5 @@ edition = "2021"
 buddy_system_allocator = "0.8"
 bitflags = "1.2"
 bit_field = "0.10"
-riscv = { git = "https://github.com/rust-embedded/riscv", rev = "dc0bc37e", features = ["inline-asm"] }
+riscv = { git = "https://github.com/rust-embedded/riscv", rev = "cd31989b", features = ["inline-asm"] }
 spin = "0.9"
