@@ -283,7 +283,7 @@ checksum = "f497285884f3fcff424ffc933e56d7cbca511def0c9831a7f9b5f6153e3cc89b"
 [[package]]
 name = "riscv"
 version = "0.7.0"
-source = "git+https://github.com/rust-embedded/riscv?rev=dc0bc37e#dc0bc37e760ae6cec247f54c4e69c5d3789cedd8"
+source = "git+https://github.com/rust-embedded/riscv?rev=cd31989b#cd31989ba11d5d64e1addd8aab98bfb00dd927d5"
 dependencies = [
  "bare-metal",
  "bit_field",

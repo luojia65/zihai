@@ -67,7 +67,10 @@ fn xtask_build_zihai() {
 fn xtask_run_zihai() {
     let mut command = Command::new("qemu-system-riscv64");
     command.current_dir(project_root());
-    command.args(&["-cpu", "rv64,x-h=true"]); // enable hypervisor
+    if detect_should_qemu_riscv_h_fix() {
+        // fix quirk on qemu 6
+        command.args(&["-cpu", "rv64,x-h=true"]); // enable hypervisor on qemu 6
+    }
     command.args(&["-machine", "virt"]);
     command.args(&["-bios", "bootloader/rustsbi-qemu.bin"]);
     // QEMU supports to run ELF file directly
@@ -86,7 +89,10 @@ fn xtask_run_zihai() {
 fn xtask_debug_zihai() {
     let mut command = Command::new("qemu-system-riscv64");
     command.current_dir(project_root());
-    command.args(&["-cpu", "rv64,x-h=true"]); // enable hypervisor
+    if detect_should_qemu_riscv_h_fix() {
+        // fix quirk on qemu 6
+        command.args(&["-cpu", "rv64,x-h=true"]); // enable hypervisor on qemu 6
+    }
     command.args(&["-machine", "virt"]);
     command.args(&["-bios", "bootloader/rustsbi-qemu.bin"]);
     command.args(&["-kernel", "target/riscv64imac-unknown-none-elf/debug/zihai"]);
@@ -132,4 +138,19 @@ fn project_root() -> PathBuf {
         .nth(1)
         .unwrap()
         .to_path_buf()
+}
+
+fn detect_should_qemu_riscv_h_fix() -> bool {
+    let mut command = Command::new("qemu-system-riscv64");
+    command.arg("-version");
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.trim_start_matches("QEMU emulator version ");
+    if version.starts_with("6.") {
+        return true;
+    }
+    if version.starts_with("7.") {
+        return false;
+    }
+    panic!("xtask: this version of QEMU is not supported yet!")
 }
